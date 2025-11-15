@@ -1,6 +1,5 @@
-# app.py — FIXED VERSION (Weights-only loading)
 import streamlit as st
-st.set_page_config(page_title="🎬 Smart Ad Placement", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="ADAPTOID - Adaptive AI Ad Placement Engine", layout="wide", initial_sidebar_state="expanded")
 
 import pandas as pd
 import numpy as np
@@ -325,7 +324,7 @@ def sec_to_time(sec):
 
 # ============== STREAMLIT UI ==============
 
-st.title("🎬 AI-Powered Ad Placement Detector")
+st.title("🎬 ADAPTOID - Adaptive AI Ad Placement Engine")
 st.caption("Upload subtitle file (.srt, .csv, .txt) for intelligent ad break suggestions")
 
 # ============== SIDEBAR CONTROLS ==============
@@ -554,4 +553,5 @@ else:
         )
 
 st.markdown("---")
-st.caption("🚀 Built with BiLSTM + Streamlit | © 2025 Ad Placement AI")
+st.caption("Made by Aryan & Harshit 😁")
+
