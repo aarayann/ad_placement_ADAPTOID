@@ -1,5 +1,5 @@
 import streamlit as st
-st.set_page_config(page_title="ADAPTOID - Adaptive AI Ad Placement Engine", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="🎬 ADAPTOID - Adaptive AI Ad Placement Engine", layout="wide", initial_sidebar_state="expanded")
 
 import pandas as pd
 import numpy as np
@@ -13,8 +13,7 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============== CONFIG ==============
-MODEL_PATH = r"bilstm_ad_model.weights.h55"
+MODEL_PATH = r"bilstm_ad_model.h5"
 WEIGHTS_PATH = r"bilstm_ad_model.weights.h5"
 TOKENIZER_PATH = r"tokenizer.pkl"
 VOCAB_SIZE = 8000
@@ -28,7 +27,6 @@ END_CUTOFF = 600.0
 WINDOW_SECONDS = 3600
 WINDOW_MAX = 3
 
-# ============== BUILD MODEL ARCHITECTURE ==============
 def build_model_architecture():
     """Recreate exact model architecture (same as training)"""
     available_numeric_cols = ['norm_gap', 'norm_duration', 'is_sentence_end', 'has_music_tag', 'is_shouting']
@@ -87,14 +85,11 @@ def build_model_architecture():
 def load_model_and_tokenizer():
     """Load model and tokenizer with fallback options"""
     
-    # Check files exist
     if not os.path.exists(TOKENIZER_PATH):
         st.error(f"❌ Tokenizer not found: {TOKENIZER_PATH}")
         st.error(f"Current directory: {os.getcwd()}")
-        st.error(f"Available files: {os.listdir('.')}")
         st.stop()
     
-    # Load tokenizer
     try:
         with open(TOKENIZER_PATH, 'rb') as f:
             tokenizer = pickle.load(f)
@@ -103,37 +98,24 @@ def load_model_and_tokenizer():
         st.error(f"❌ Failed to load tokenizer: {e}")
         st.stop()
     
-    # Try loading model - multiple methods
     model = None
     
-    # Method 1: Try loading full .h5 model
-    if os.path.exists(MODEL_PATH):
-        try:
-            with tf.keras.utils.custom_object_scope({'NotEqual': tf.math.not_equal}):
-                model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-            st.success("✅ Model loaded (Method 1: Full .h5)!")
-            return model, tokenizer
-        except Exception as e:
-            st.warning(f"⚠️ Method 1 failed: {e}")
+
     
-    # Method 2: Build architecture + load weights
     if os.path.exists(WEIGHTS_PATH):
         try:
-            st.info("⏳ Loading model (Method 2: Architecture + Weights)...")
+            st.info("⏳ Loading model")
             model = build_model_architecture()
             model.load_weights(WEIGHTS_PATH)
-            st.success("✅ Model loaded (Method 2: Weights)!")
+            st.success("✅ Model loaded")
             return model, tokenizer
         except Exception as e:
             st.warning(f"⚠️ Method 2 failed: {e}")
     
-    # Method 3: Build fresh architecture (inference only, no weights)
     if model is None:
         try:
-            st.warning("⚠️ No weights found. Using fresh model architecture (random weights).")
-            st.info("⏳ Building model from architecture...")
+            st.warning("⚠️ No weights found. Using fresh model architecture.")
             model = build_model_architecture()
-            st.warning("⚠️ Using random weights - predictions may be inaccurate!")
             return model, tokenizer
         except Exception as e:
             st.error(f"❌ Failed to build model: {e}")
@@ -141,10 +123,8 @@ def load_model_and_tokenizer():
     
     return model, tokenizer
 
-# Try to load
 model, tokenizer = load_model_and_tokenizer()
 
-# ============== DARK THEME CSS ==============
 st.markdown("""
     <style>
     body {background-color: #0e1117; color: #f8f9fa;}
@@ -169,7 +149,281 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ============== HELPER FUNCTIONS ==============
+
+def extract_video_id(url):
+    """Extract video ID from YouTube URL"""
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})',
+        r'(?:youtu\.be\/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+def fetch_youtube_subtitles_method1(video_id):
+    """Method 1: youtube-transcript-api library - MOST RELIABLE"""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+        
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # Try manual transcripts first (highest quality)
+        for lang in ['en', 'en-US', 'en-GB']:
+            try:
+                transcript = transcript_list.find_manually_created_transcript([lang])
+                data = transcript.fetch()
+                if data and len(data) > 10:  # Validate substantial content
+                    return data, "✅ Method 1 (Manual EN)"
+            except:
+                continue
+        
+        # Try auto-generated English
+        for lang in ['en', 'en-US', 'en-GB']:
+            try:
+                transcript = transcript_list.find_generated_transcript([lang])
+                data = transcript.fetch()
+                if data and len(data) > 10:
+                    return data, "✅ Method 1 (Auto EN)"
+            except:
+                continue
+        
+        # Try Hindi
+        for lang in ['hi', 'hi-IN']:
+            try:
+                transcript = transcript_list.find_manually_created_transcript([lang])
+                data = transcript.fetch()
+                if data and len(data) > 10:
+                    return data, "✅ Method 1 (Manual HI)"
+            except:
+                continue
+        
+        # Try any available transcript
+        for transcript in transcript_list:
+            try:
+                data = transcript.fetch()
+                if data and len(data) > 10:
+                    return data, f"✅ Method 1 ({transcript.language_code})"
+            except:
+                continue
+        
+    except Exception as e:
+        pass
+    
+    return None, None
+
+def download_and_parse_subtitle_url(url):
+    """Download subtitle file from URL and parse it"""
+    try:
+        import urllib.request
+        import xml.etree.ElementTree as ET
+        
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        response = urllib.request.urlopen(req, timeout=10)
+        content = response.read().decode('utf-8', errors='ignore')
+        
+        rows = []
+        
+        # Try XML format (YouTube format)
+        if '<text' in content or '<transcript>' in content:
+            try:
+                root = ET.fromstring(content)
+                for text_elem in root.findall('.//text'):
+                    start = float(text_elem.get('start', 0))
+                    dur = float(text_elem.get('dur', 1))
+                    text = text_elem.text or ''
+                    text = text.replace('\n', ' ').strip()
+                    if text:
+                        rows.append({
+                            'start': start,
+                            'duration': dur,
+                            'text': text
+                        })
+            except:
+                pass
+        
+        # Try JSON format
+        elif content.startswith('{') or content.startswith('['):
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    for entry in data:
+                        if 'start' in entry and 'text' in entry:
+                            rows.append({
+                                'start': float(entry.get('start', 0)),
+                                'duration': float(entry.get('duration', entry.get('dur', 1))),
+                                'text': str(entry.get('text', ''))
+                            })
+            except:
+                pass
+        
+        # Try VTT/SRT format
+        else:
+            lines = content.split('\n')
+            for line in lines:
+                # Match timestamp patterns
+                if '-->' in line:
+                    continue
+                # Extract text lines
+                line = line.strip()
+                if line and not line.isdigit() and 'WEBVTT' not in line:
+                    rows.append({
+                        'start': len(rows) * 2.0,  # Approximate timing
+                        'duration': 2.0,
+                        'text': line
+                    })
+        
+        return rows if len(rows) > 10 else None
+        
+    except Exception as e:
+        return None
+
+def fetch_youtube_subtitles_method2(video_id):
+    """Method 2: yt-dlp with proper subtitle download"""
+    try:
+        import yt_dlp
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'skip_download': True,
+            'subtitleslangs': ['en', 'en-US', 'en-GB', 'hi'],
+            'subtitlesformat': 'json3/srv3/srv2/srv1/ttml/vtt',
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            
+            # Check subtitles (manual)
+            if 'subtitles' in info and info['subtitles']:
+                for lang in ['en', 'en-US', 'en-GB', 'hi']:
+                    if lang in info['subtitles']:
+                        sub_list = info['subtitles'][lang]
+                        for sub in sub_list:
+                            if 'url' in sub:
+                                rows = download_and_parse_subtitle_url(sub['url'])
+                                if rows and len(rows) > 10:
+                                    return rows, f"✅ Method 2 (Manual {lang})"
+            
+            # Check automatic captions
+            if 'automatic_captions' in info and info['automatic_captions']:
+                for lang in ['en', 'en-US', 'en-GB', 'hi']:
+                    if lang in info['automatic_captions']:
+                        sub_list = info['automatic_captions'][lang]
+                        for sub in sub_list:
+                            if 'url' in sub:
+                                rows = download_and_parse_subtitle_url(sub['url'])
+                                if rows and len(rows) > 10:
+                                    return rows, f"✅ Method 2 (Auto {lang})"
+        
+    except Exception as e:
+        pass
+    
+    return None, None
+
+def fetch_youtube_subtitles_method3(video_id):
+    """Method 3: Direct web scraping from YouTube page"""
+    try:
+        import urllib.request
+        import xml.etree.ElementTree as ET
+        
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        req = urllib.request.Request(url, headers=headers)
+        html = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='ignore')
+        
+        # Extract caption track URL
+        if '"captions":' in html or '"captionTracks":' in html:
+            # Find captionTracks JSON
+            pattern = r'"captionTracks":\s*(\[.*?\])'
+            match = re.search(pattern, html)
+            
+            if match:
+                try:
+                    tracks_json = match.group(1)
+                    tracks = json.loads(tracks_json)
+                    
+                    # Try English first
+                    for track in tracks:
+                        if 'baseUrl' in track:
+                            lang_code = track.get('languageCode', '')
+                            if lang_code.startswith('en') or lang_code == 'a.en':
+                                caption_url = track['baseUrl']
+                                rows = download_and_parse_subtitle_url(caption_url)
+                                if rows and len(rows) > 10:
+                                    return rows, "✅ Method 3 (Web EN)"
+                    
+                    # Try any available
+                    for track in tracks:
+                        if 'baseUrl' in track:
+                            caption_url = track['baseUrl']
+                            rows = download_and_parse_subtitle_url(caption_url)
+                            if rows and len(rows) > 10:
+                                lang = track.get('languageCode', 'unknown')
+                                return rows, f"✅ Method 3 (Web {lang})"
+                except:
+                    pass
+        
+    except Exception as e:
+        pass
+    
+    return None, None
+
+def fetch_youtube_subtitles(video_id):
+    """Try all methods to fetch subtitles"""
+    
+    # Method 1 is most reliable
+    subtitles, method = fetch_youtube_subtitles_method1(video_id)
+    if subtitles and len(subtitles) > 10:
+        return subtitles, method
+    
+    # Method 2 as backup
+    subtitles, method = fetch_youtube_subtitles_method2(video_id)
+    if subtitles and len(subtitles) > 10:
+        return subtitles, method
+    
+    # Method 3 as last resort
+    subtitles, method = fetch_youtube_subtitles_method3(video_id)
+    if subtitles and len(subtitles) > 10:
+        return subtitles, method
+    
+    return None, None
+
+def youtube_to_dataframe(video_id):
+    """Convert YouTube subtitles to DataFrame with validation"""
+    
+    subtitles, method = fetch_youtube_subtitles(video_id)
+    
+    if subtitles is None or len(subtitles) < 10:
+        return None, "❌ No valid subtitles found (tried all 3 methods)"
+    
+    rows = []
+    for entry in subtitles:
+        start = float(entry.get('start', 0))
+        duration = float(entry.get('duration', entry.get('dur', 1)))
+        text = str(entry.get('text', '')).strip()
+        
+        if text and duration > 0:  # Validate entry
+            rows.append({
+                'start_time': start,
+                'end_time': start + duration,
+                'text': text
+            })
+    
+    if len(rows) < 10:
+        return None, f"❌ Insufficient subtitle data (only {len(rows)} entries found)"
+    
+    df = pd.DataFrame(rows)
+    return df, method
 
 def srt_time_to_sec(ts):
     """Convert SRT timestamp (HH:MM:SS,mmm) to seconds"""
@@ -203,7 +457,7 @@ def parse_srt(file):
     return pd.DataFrame(rows)
 
 def parse_txt(file):
-    """Parse TXT subtitle file (format: [HH:MM:SS] text or [MM:SS] text)"""
+    """Parse TXT subtitle file"""
     raw = file.read().decode("utf-8", errors="ignore")
     lines = raw.splitlines()
     rows = []
@@ -322,12 +576,10 @@ def sec_to_time(sec):
     """Convert seconds to HH:MM:SS format"""
     return str(timedelta(seconds=int(round(sec))))
 
-# ============== STREAMLIT UI ==============
 
 st.title("🎬 ADAPTOID - Adaptive AI Ad Placement Engine")
-st.caption("Upload subtitle file (.srt, .csv, .txt) for intelligent ad break suggestions")
+st.caption("Upload subtitle file (.srt, .csv, .txt) or paste YouTube link for intelligent ad break suggestions")
 
-# ============== SIDEBAR CONTROLS ==============
 st.sidebar.header("⚙️ Detection Settings")
 
 threshold = st.sidebar.slider(
@@ -370,59 +622,111 @@ st.sidebar.markdown("---")
 st.sidebar.write(f"**Window Settings:**")
 st.sidebar.write(f"• Max {WINDOW_MAX} ads per {WINDOW_SECONDS//60} minutes")
 
-# ============== FILE UPLOAD ==============
+# ============== INPUT SELECTION ==============
 
-st.markdown("### 📁 Upload Subtitle File")
-uploaded = st.file_uploader(
-    "Choose a subtitle file",
-    type=["srt", "csv", "txt"],
-    help="Supported: SRT, CSV (with start_time, end_time, text), TXT"
-)
+st.markdown("### 📥 Choose Input Method")
 
-if not uploaded:
-    st.info("👆 **Upload a file to begin** (SRT / CSV / TXT)")
+tab1, tab2 = st.tabs(["📁 Upload File", "🔗 YouTube Link"])
+
+df = None
+source_name = None
+
+with tab1:
+    st.markdown("**Upload a subtitle file**")
+    uploaded = st.file_uploader(
+        "Choose a subtitle file",
+        type=["srt", "csv", "txt"],
+        help="Supported: SRT, CSV (with start_time, end_time, text), TXT"
+    )
+    
+    if uploaded:
+        filetype = uploaded.name.split(".")[-1].lower()
+        source_name = uploaded.name
+        
+        try:
+            if filetype == "srt":
+                df = parse_srt(uploaded)
+                st.success("✅ SRT file parsed")
+            elif filetype == "txt":
+                df = parse_txt(uploaded)
+                st.success("✅ TXT file parsed")
+            else:
+                df = pd.read_csv(uploaded, low_memory=False)
+                
+                if 'text' not in df.columns:
+                    st.error("❌ CSV must contain 'text' column")
+                    st.stop()
+                
+                if 'start_time' not in df.columns:
+                    st.error("❌ CSV must contain 'start_time' column")
+                    st.stop()
+                
+                if 'end_time' not in df.columns:
+                    df = df.sort_values('start_time').reset_index(drop=True)
+                    df['end_time'] = df['start_time'].shift(-1) - 1.0
+                    df['end_time'] = df['end_time'].fillna(df['start_time'] + 1.0)
+                    df['end_time'] = df.apply(lambda r: max(r['end_time'], r['start_time'] + 0.5), axis=1)
+                
+                st.success("✅ CSV file parsed")
+        
+        except Exception as e:
+            st.error(f"❌ Failed to parse file: {e}")
+            st.stop()
+
+with tab2:
+    st.markdown("**Paste YouTube video URL or ID**")
+    
+    
+    youtube_input = st.text_input(
+        "YouTube URL or Video ID",
+        placeholder="https://www.youtube.com/watch?v=VIDEO_ID or just VIDEO_ID",
+        help="Paste full YouTube URL or just the 11-character video ID"
+    )
+    
+    if youtube_input and youtube_input.strip():
+        video_id = extract_video_id(youtube_input.strip())
+        
+        if not video_id:
+            st.error("❌ Invalid YouTube URL or Video ID")
+        else:
+            st.info(f"🎥 Video ID: `{video_id}`")
+            
+            with st.spinner("⏳ Fetching subtitles (trying 3 methods sequentially)..."):
+                df, method = youtube_to_dataframe(video_id)
+            
+            if df is None:
+                st.error(f"{method}")
+                st.markdown("""
+                **Possible reasons:**
+                - Video has no captions/subtitles enabled
+                - Captions are disabled by the uploader
+                - Video is private or age-restricted
+                - Network connectivity issue
+                
+                **Try:**
+                - Wait 1-2 minutes and try again
+                - Try a different YouTube video
+                - Use file upload method if subtitles are available for download
+                """)
+            else:
+                st.success(f"✅ Subtitles fetched! {method} | {len(df)} entries")
+                source_name = f"YouTube_{video_id}"
+
+# ============== PROCESSING ==============
+
+if df is None or df.empty:
+    st.info("👆 **Choose an input method above** (Upload file or paste YouTube link)")
     st.markdown("""
     ---
     **Supported Formats:**
+    - **YouTube**: Automatically fetches captions/subtitles
     - **SRT**: Standard subtitle format (00:00:00,000 --> 00:00:05,000)
     - **TXT**: Time-stamped format ([HH:MM:SS] text or [MM:SS] text)
     - **CSV**: Must have columns: start_time, end_time, text
     """)
 else:
-    filetype = uploaded.name.split(".")[-1].lower()
-    
-    try:
-        if filetype == "srt":
-            df = parse_srt(uploaded)
-            st.success("✅ SRT file parsed")
-        elif filetype == "txt":
-            df = parse_txt(uploaded)
-            st.success("✅ TXT file parsed")
-        else:
-            df = pd.read_csv(uploaded, low_memory=False)
-            
-            if 'text' not in df.columns:
-                st.error("❌ CSV must contain 'text' column")
-                st.stop()
-            
-            if 'start_time' not in df.columns:
-                st.error("❌ CSV must contain 'start_time' column")
-                st.stop()
-            
-            if 'end_time' not in df.columns:
-                df = df.sort_values('start_time').reset_index(drop=True)
-                df['end_time'] = df['start_time'].shift(-1) - 1.0
-                df['end_time'] = df['end_time'].fillna(df['start_time'] + 1.0)
-                df['end_time'] = df.apply(lambda r: max(r['end_time'], r['start_time'] + 0.5), axis=1)
-            
-            st.success("✅ CSV file parsed")
-    
-    except Exception as e:
-        st.error(f"❌ Failed to parse file: {e}")
-        st.stop()
-    
-    if df.empty or len(df) == 0:
-        st.error("❌ Parsed file has zero rows. Check file format.")
+    if len(df) < 10:
+        st.error(f"❌ Insufficient subtitle data: only {len(df)} rows found. Need at least 10 rows.")
         st.stop()
     
     df = compute_features(df)
@@ -430,7 +734,7 @@ else:
     movie_length = float(df['end_time'].max())
     movie_length_min = movie_length / 60.0
     
-    st.success(f"✅ Loaded {len(df)} subtitle rows | Movie: {sec_to_time(movie_length)} ({movie_length_min:.1f} mins)")
+    st.success(f"✅ Loaded {len(df)} subtitle rows | Video: {sec_to_time(movie_length)} ({movie_length_min:.1f} mins)")
     
     # ============== MODEL PREDICTION ==============
     st.markdown("### 🧠 Running Model Prediction...")
@@ -451,7 +755,7 @@ else:
     # ============== SIDEBAR INFO ==============
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Analysis Info")
-    st.sidebar.metric("🎞️ Movie Length", sec_to_time(movie_length))
+    st.sidebar.metric("🎞️ Video Length", sec_to_time(movie_length))
     st.sidebar.metric("📝 Subtitle Rows", len(df))
     
     raw_candidates = df[
@@ -477,22 +781,13 @@ else:
     for t in selected:
         row = df.iloc[(df['start_time'] - t).abs().argsort()[:1]].iloc[0]
         
-        reasons = []
-        if row['norm_gap'] > 0.5:
-            reasons.append('long_gap')
-        if row['is_sentence_end']:
-            reasons.append('sentence_end')
-        if row['has_music_tag']:
-            reasons.append('music_tag')
-        if not row['is_shouting']:
-            reasons.append('not_shouting')
+
         
         out.append({
             'Ad Time': sec_to_time(t),
             'Seconds': round(float(t), 2),
             'Model Prob': f"{float(row['prob']):.3f}",
-            'Ad Score': f"{float(row['ad_score']):.3f}",
-            'Reasons': ", ".join(reasons) or "optimal_score",
+
             'Text': row['text'][:50] + "..." if len(str(row['text'])) > 50 else row['text']
         })
     
@@ -513,7 +808,7 @@ else:
         
         st.sidebar.markdown("---")
         st.sidebar.subheader("📈 Summary")
-        st.sidebar.metric("🎞️ Total Movie Length", sec_to_time(movie_length))
+        st.sidebar.metric("🎞️ Total Video Length", sec_to_time(movie_length))
         st.sidebar.metric("📍 Ads Suggested", len(df_out))
         
         if len(df_out) > 0:
@@ -548,10 +843,9 @@ else:
         st.download_button(
             label="📥 Download Results as CSV",
             data=csv_data,
-            file_name=f"ad_suggestions_{uploaded.name.split('.')[0]}.csv",
+            file_name=f"ad_suggestions_{source_name.split('.')[0] if source_name else 'results'}.csv",
             mime="text/csv"
         )
 
 st.markdown("---")
 st.caption("Made by Aryan & Harshit 😁")
-
