@@ -4,3 +4,6 @@ numpy
 tensorflow
 matplotlib
 scikit-learn
+youtube-transcript-api
+yt-dlp
+requests
